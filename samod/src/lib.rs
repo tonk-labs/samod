@@ -298,6 +298,23 @@ use crate::{doc_actor_inner::DocActorInner, storage::Storage};
 pub mod runtime;
 pub mod websocket;
 
+// Re-export wasm-bindgen-rayon init for browser WASM targets
+#[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+use crate::actor_handle::ActorSender;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
 /// The entry point to this library
 ///
 /// A [`Repo`] represents a set of running [`DocHandle`]s, active connections to
@@ -366,6 +383,16 @@ impl Repo {
         builder::RepoBuilder::new(crate::runtime::gio::GioRuntime::new())
     }
 
+    /// Create a new [`RepoBuilder`] which will build a [`Repo`] that spawns its
+    /// tasks using wasm-bindgen-futures for WebAssembly environments
+    ///
+    /// This is suitable for running in web browsers or Node.js with WASM support.
+    #[cfg(any(feature = "wasm-browser", feature = "wasm-node"))]
+    pub fn build_wasm()
+    -> RepoBuilder<InMemoryStorage, crate::runtime::wasm::WasmRuntime, AlwaysAnnounce> {
+        builder::RepoBuilder::new(crate::runtime::wasm::WasmRuntime::new())
+    }
+
     pub(crate) async fn load<R: runtime::RuntimeHandle, S: Storage, A: AnnouncePolicy>(
         builder: RepoBuilder<S, R, A>,
     ) -> Self {
@@ -406,6 +433,7 @@ impl Repo {
         let (tx_storage, rx_storage) = mpsc::unbounded();
         let (tx_to_core, rx_from_core) = mpsc::unbounded();
         let inner = Arc::new(Mutex::new(Inner {
+            #[cfg(not(target_arch = "wasm32"))]
             workers: rayon::ThreadPoolBuilder::new().build().unwrap(),
             actors: HashMap::new(),
             hub: *hub,
@@ -624,7 +652,7 @@ impl Repo {
                     .unwrap()
                     .connections
                     .get_mut(&connection_id)
-                    .map(|ConnHandle { rx, .. }| (rx.take()))
+                    .map(|ConnHandle { rx, .. }| rx.take())
                     .expect("connection not found");
                 rx.take().expect("receive end not found")
             };
@@ -726,6 +754,7 @@ impl Repo {
 }
 
 struct Inner {
+    #[cfg(not(target_arch = "wasm32"))]
     workers: rayon::ThreadPool,
     actors: HashMap<DocumentActorId, ActorHandle>,
     hub: Hub,
@@ -750,7 +779,6 @@ impl Inner {
             stopped,
             connection_events,
         } = self.hub.handle_event(&mut self.rng, now, event);
-
         for spawn_args in spawn_actors {
             self.spawn_actor(spawn_args);
         }
@@ -841,7 +869,6 @@ impl Inner {
 
     #[tracing::instrument(skip(self, args))]
     fn spawn_actor(&mut self, args: SpawnArgs) {
-        let (tx, rx) = std_mpsc::channel();
         let actor_id = args.actor_id();
         let doc_id = args.document_id().clone();
         let (actor, init_results) = DocumentActor::new(UnixTimestamp::now(), args);
@@ -854,29 +881,171 @@ impl Inner {
             self.tx_io.clone(),
         )));
         let handle = DocHandle::new(doc_id.clone(), doc_inner.clone());
-        self.actors.insert(
-            actor_id,
-            ActorHandle {
-                inner: doc_inner.clone(),
-                tx,
-                doc: handle,
-            },
-        );
 
         let span = tracing::Span::current();
-        self.workers.spawn(move || {
-            let _enter = span.enter();
-            doc_inner.lock().unwrap().handle_results(init_results);
 
-            while let Ok(actor_task) = rx.recv() {
-                let mut inner = doc_inner.lock().unwrap();
-                inner.handle_task(actor_task);
-                if inner.is_stopped() {
-                    tracing::debug!(?doc_id, ?actor_id, "actor stopped");
-                    break;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (tx, rx) = std_mpsc::channel();
+            self.actors.insert(
+                actor_id,
+                ActorHandle {
+                    inner: doc_inner.clone(),
+                    tx: Box::new(tx),
+                    doc: handle,
+                },
+            );
+
+            // Use Rayon ThreadPool for native targets
+            self.workers.spawn(move || {
+                let _enter = span.enter();
+                doc_inner.lock().unwrap().handle_results(init_results);
+
+                while let Ok(actor_task) = rx.recv() {
+                    let mut inner = doc_inner.lock().unwrap();
+                    inner.handle_task(actor_task);
+                    if inner.is_stopped() {
+                        tracing::debug!(?doc_id, ?actor_id, "actor stopped");
+                        break;
+                    }
+                }
+            });
+        }
+
+        #[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+        {
+            // Use async channel for WASM
+            let (tx, mut rx) = mpsc::unbounded();
+
+            // Need to create a wrapper for the sync ActorHandle interface
+            struct WasmActorTx {
+                tx: mpsc::UnboundedSender<ActorTask>,
+            }
+            impl ActorSender for WasmActorTx {
+                fn send(&self, task: ActorTask) -> Result<(), std_mpsc::SendError<ActorTask>> {
+                    self.tx
+                        .unbounded_send(task)
+                        .map_err(|e| std_mpsc::SendError(e.into_inner()))
                 }
             }
-        });
+
+            self.actors.insert(
+                actor_id,
+                ActorHandle {
+                    inner: doc_inner.clone(),
+                    tx: Box::new(WasmActorTx { tx }),
+                    doc: handle,
+                },
+            );
+
+            // Use wasm-bindgen-rayon for browser WASM targets with async channels
+            wasm_bindgen_futures::spawn_local(async move {
+                let _enter = span.enter();
+                doc_inner.lock().unwrap().handle_results(init_results);
+
+                while let Some(actor_task) = rx.next().await {
+                    let mut inner = doc_inner.lock().unwrap();
+                    inner.handle_task(actor_task);
+                    if inner.is_stopped() {
+                        tracing::debug!(?doc_id, ?actor_id, "actor stopped");
+                        break;
+                    }
+                }
+            });
+        }
+
+        #[cfg(all(target_arch = "wasm32", any(feature = "wasm-node", feature = "wasi")))]
+        {
+            // Use async channel for WASM
+            let (tx, mut rx) = mpsc::unbounded();
+
+            // Need to create a wrapper for the sync ActorHandle interface
+            struct WasmActorTx {
+                tx: mpsc::UnboundedSender<ActorTask>,
+            }
+            impl ActorSender for WasmActorTx {
+                fn send(&self, task: ActorTask) -> Result<(), std_mpsc::SendError<ActorTask>> {
+                    self.tx
+                        .unbounded_send(task)
+                        .map_err(|e| std_mpsc::SendError(e.into_inner()))
+                }
+            }
+
+            self.actors.insert(
+                actor_id,
+                ActorHandle {
+                    inner: doc_inner.clone(),
+                    tx: Box::new(WasmActorTx { tx }),
+                    doc: handle,
+                },
+            );
+
+            // Single-threaded fallback for Node.js WASM targets
+            use crate::runtime::RuntimeHandle;
+            let runtime = crate::runtime::wasm::WasmRuntime::new();
+            runtime.spawn(async move {
+                let _enter = span.enter();
+                // Process init results first by handling them without blocking
+                doc_inner.lock().unwrap().handle_results(init_results);
+
+                // Now run the message loop to handle any IO completions that result from init_results
+                while let Some(actor_task) = rx.next().await {
+                    let mut inner = doc_inner.lock().unwrap();
+                    inner.handle_task(actor_task);
+                    if inner.is_stopped() {
+                        tracing::debug!(?doc_id, ?actor_id, "actor stopped");
+                        break;
+                    }
+                }
+            });
+        }
+
+        #[cfg(all(
+            target_arch = "wasm32",
+            not(any(feature = "wasm-browser", feature = "wasm-node", feature = "wasi"))
+        ))]
+        {
+            // Use async channel for WASM
+            let (tx, mut rx) = mpsc::unbounded();
+
+            // Need to create a wrapper for the sync ActorHandle interface
+            struct WasmActorTx {
+                tx: mpsc::UnboundedSender<ActorTask>,
+            }
+            impl ActorSender for WasmActorTx {
+                fn send(&self, task: ActorTask) -> Result<(), std_mpsc::SendError<ActorTask>> {
+                    self.tx
+                        .unbounded_send(task)
+                        .map_err(|e| std_mpsc::SendError(e.into_inner()))
+                }
+            }
+
+            self.actors.insert(
+                actor_id,
+                ActorHandle {
+                    inner: doc_inner.clone(),
+                    tx: Box::new(WasmActorTx { tx }),
+                    doc: handle,
+                },
+            );
+
+            // Process initial results synchronously first
+            doc_inner.lock().unwrap().handle_results(init_results);
+
+            // For fallback WASM, we use a simple async spawner
+            wasm_bindgen_futures::spawn_local(async move {
+                let _enter = span.enter();
+
+                while let Some(actor_task) = rx.next().await {
+                    let mut inner = doc_inner.lock().unwrap();
+                    inner.handle_task(actor_task);
+                    if inner.is_stopped() {
+                        tracing::debug!(?doc_id, ?actor_id, "actor stopped");
+                        break;
+                    }
+                }
+            });
+        }
     }
 }
 

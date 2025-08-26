@@ -24,13 +24,7 @@ pub struct DocActorResult {
 impl DocActorResult {
     /// Creates an empty result.
     pub fn new() -> Self {
-        Self {
-            io_tasks: Vec::new(),
-            outgoing_messages: Vec::new(),
-            ephemeral_messages: Vec::new(),
-            change_events: Vec::new(),
-            stopped: false,
-        }
+        Self::default()
     }
 
     pub(crate) fn emit_ephemeral_message(&mut self, msg: Vec<u8>) {
@@ -68,6 +62,12 @@ impl DocActorResult {
 
 impl Default for DocActorResult {
     fn default() -> Self {
-        Self::new()
+        Self {
+            io_tasks: Vec::default(),
+            outgoing_messages: Vec::default(),
+            ephemeral_messages: Vec::default(),
+            change_events: Vec::default(),
+            stopped: bool::default(),
+        }
     }
 }

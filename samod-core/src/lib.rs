@@ -22,4 +22,4 @@ mod unix_timestamp;
 pub use unix_timestamp::UnixTimestamp;
 
 mod loader;
-pub use loader::{LoaderState, SamodLoader};
+pub use loader::{LoaderError, LoaderState, SamodLoader};

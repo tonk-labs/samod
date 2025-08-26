@@ -9,6 +9,8 @@ pub mod gio;
 pub mod localpool;
 #[cfg(feature = "tokio")]
 mod tokio;
+#[cfg(any(feature = "wasm-browser", feature = "wasm-node", feature = "wasi"))]
+pub mod wasm;
 
 /// An abstraction over the asynchronous runtime the repo is running on
 ///

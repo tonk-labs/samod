@@ -66,7 +66,7 @@ impl Load {
     /// Progress the load operation, returning any IO tasks that need to be dispatched
     pub(crate) fn step(&mut self) -> Vec<IoTask<StorageTask>> {
         match &self.state {
-            LoadState::Idle => Vec::new(),
+            LoadState::Idle => Vec::default(),
             LoadState::Initial => {
                 let snapshot_prefix =
                     StorageKey::from(vec![self.doc_id.to_string(), "snapshot".to_string()]);

@@ -15,7 +15,7 @@ use crate::{
     network::{
         ConnDirection, ConnectionEvent, ConnectionInfo, ConnectionState, PeerDocState, PeerInfo,
         PeerMetadata,
-        wire_protocol::{WireMessage, WireMessageBuilder},
+        wire_protocol::{WireMessage, WireMessageBuilder, PROTOCOL_VERSION},
     },
 };
 
@@ -64,9 +64,9 @@ impl State {
         Self {
             storage_id,
             peer_id,
-            actors: HashMap::new(),
-            connections: HashMap::new(),
-            document_to_actor: HashMap::new(),
+            actors: HashMap::default(),
+            connections: HashMap::default(),
+            document_to_actor: HashMap::default(),
             pending_commands: pending_commands::PendingCommands::new(),
             ephemeral_session,
             run_state: RunState::Running,
@@ -119,7 +119,7 @@ impl State {
                             },
                         )
                     } else {
-                        (HashMap::new(), ConnectionState::Handshaking)
+                        (HashMap::default(), ConnectionState::Handshaking)
                     };
                 ConnectionInfo {
                     id: *conn_id,
@@ -229,18 +229,18 @@ impl State {
             return;
         };
         actor_info.status = new_status;
-        let doc_id = actor_info.document_id.clone();
+        let doc_id = &actor_info.document_id;
         match new_status {
             DocumentStatus::Ready => {
                 self.pending_commands
-                    .resolve_pending_create(actor_id, &doc_id);
+                    .resolve_pending_create(actor_id, doc_id);
                 self.pending_commands
-                    .resolve_pending_find(&doc_id, actor_id, true);
+                    .resolve_pending_find(doc_id, actor_id, true);
             }
             DocumentStatus::NotFound => {
                 assert!(!self.pending_commands.has_pending_create(actor_id));
                 self.pending_commands
-                    .resolve_pending_find(&doc_id, actor_id, false);
+                    .resolve_pending_find(doc_id, actor_id, false);
             }
             _ => {}
         }
@@ -579,7 +579,7 @@ impl State {
                     let peer_info = PeerInfo {
                         peer_id: remote_peer_id.clone(),
                         metadata: Some(self.get_local_metadata()),
-                        protocol_version: "1".to_string(),
+                        protocol_version: PROTOCOL_VERSION.to_string(),
                     };
                     out.emit_connection_event(ConnectionEvent::HandshakeCompleted {
                         connection_id,

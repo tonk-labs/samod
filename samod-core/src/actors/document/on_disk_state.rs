@@ -7,6 +7,7 @@ use crate::{
     actors::document::DocActorResult,
     io::{IoTaskId, StorageResult},
 };
+use super::errors::DocumentError;
 
 mod compaction_hash;
 use compaction_hash::CompactionHash;
@@ -91,24 +92,26 @@ impl OnDiskState {
         self.running_puts.contains_key(&task_id) || self.running_deletes.contains_key(&task_id)
     }
 
-    pub(super) fn task_complete(&mut self, task_id: IoTaskId, result: StorageResult) {
+    pub(super) fn task_complete(&mut self, task_id: IoTaskId, result: StorageResult) -> Result<(), DocumentError> {
         match result {
             StorageResult::Put => {
                 if let Some(compaction_key) = self.running_puts.remove(&task_id) {
                     tracing::debug!(key=%compaction_key, "compaction put completed for key");
                     self.mark_put_complete(task_id, compaction_key);
+                    Ok(())
                 } else {
-                    panic!("put complete for unknown task id: {:?}", task_id);
+                    Err(DocumentError::UnexpectedStorageResult(task_id))
                 }
             }
             StorageResult::Delete => {
                 if let Some(deletion_key) = self.running_deletes.remove(&task_id) {
                     self.mark_delete_complete(deletion_key);
+                    Ok(())
                 } else {
-                    panic!("delete complete for unknown task id: {:?}", task_id);
+                    Err(DocumentError::UnexpectedStorageResult(task_id))
                 }
             }
-            _ => panic!("unexpected storage result"),
+            _ => Err(DocumentError::UnexpectedStorageResult(task_id)),
         }
     }
 

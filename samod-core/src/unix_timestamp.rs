@@ -1,7 +1,13 @@
 use std::{
     ops::{Add, AddAssign, Sub},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
+
+#[cfg(not(all(target_arch = "wasm32", feature = "wasm-browser")))]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+use js_sys;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnixTimestamp {
@@ -22,11 +28,20 @@ impl std::fmt::Debug for UnixTimestamp {
 
 impl UnixTimestamp {
     pub fn now() -> Self {
-        Self {
-            millis: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
+        #[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+        {
+            Self {
+                millis: js_sys::Date::now() as u128,
+            }
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "wasm-browser")))]
+        {
+            Self {
+                millis: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            }
         }
     }
 

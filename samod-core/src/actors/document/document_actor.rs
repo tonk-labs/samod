@@ -77,9 +77,9 @@ impl DocumentActor {
             id: actor_id,
             doc_state: state,
             load_state,
-            check_policy_tasks: HashMap::new(),
+            check_policy_tasks: HashMap::default(),
             on_disk_state: OnDiskState::new(),
-            peer_connections: HashMap::new(),
+            peer_connections: HashMap::default(),
             run_state: RunState::Running,
         };
 
@@ -97,7 +97,8 @@ impl DocumentActor {
             }
         }
 
-        actor.step(now, &mut out);
+        // During initialization, the actor should never be stopped, so we can safely ignore the error
+        let _ = actor.step(now, &mut out);
         (actor, out)
     }
 
@@ -108,10 +109,10 @@ impl DocumentActor {
         message: HubToDocMsg,
     ) -> Result<DocActorResult, DocumentError> {
         if self.run_state == RunState::Stopped {
-            panic!("document actor is stopped");
+            return Err(DocumentError::ActorStopped);
         }
         let mut out = DocActorResult::default();
-        self.handle_input(now, ActorInput::from(message.0), &mut out);
+        self.handle_input(now, ActorInput::from(message.0), &mut out)?;
         Ok(out)
     }
 
@@ -133,11 +134,11 @@ impl DocumentActor {
         io_result: IoResult<DocumentIoResult>,
     ) -> Result<DocActorResult, DocumentError> {
         if self.run_state == RunState::Stopped {
-            panic!("document actor is stopped");
+            return Err(DocumentError::ActorStopped);
         }
         let mut result = DocActorResult::new();
         let input = ActorInput::IoComplete(io_result);
-        self.handle_input(now, input, &mut result);
+        self.handle_input(now, input, &mut result)?;
         Ok(result)
     }
 
@@ -146,8 +147,8 @@ impl DocumentActor {
         &self.document_id
     }
 
-    fn local_peer_id(&self) -> PeerId {
-        self.local_peer_id.clone()
+    fn local_peer_id(&self) -> &PeerId {
+        &self.local_peer_id
     }
 
     /// Provides mutable access to the document with automatic side effect handling.
@@ -202,7 +203,7 @@ impl DocumentActor {
 
         // Make sure there's one turn of the loop
         let mut actor_result = DocActorResult::new();
-        self.handle_input(now, ActorInput::Tick, &mut actor_result);
+        self.handle_input(now, ActorInput::Tick, &mut actor_result)?;
 
         if old_heads != new_heads {
             tracing::debug!(doc_id=%self.id, "document was modified in actor");
@@ -235,7 +236,7 @@ impl DocumentActor {
         self.doc_state.is_ready()
     }
 
-    fn handle_input(&mut self, now: UnixTimestamp, input: ActorInput, out: &mut DocActorResult) {
+    fn handle_input(&mut self, now: UnixTimestamp, input: ActorInput, out: &mut DocActorResult) -> Result<(), DocumentError> {
         match input {
             ActorInput::Terminate => {
                 if self.run_state == RunState::Running {
@@ -276,15 +277,15 @@ impl DocumentActor {
                                 .handle_result(io_result.task_id, storage_result);
                         } else if self.on_disk_state.has_task(io_result.task_id) {
                             self.on_disk_state
-                                .task_complete(io_result.task_id, storage_result);
+                                .task_complete(io_result.task_id, storage_result)?;
                         } else {
-                            panic!("unexpected storage result");
+                            return Err(DocumentError::UnexpectedStorageResult(io_result.task_id));
                         }
                     }
                     DocumentIoResult::CheckAnnouncePolicy(should_announce) => {
                         let Some(conn_id) = self.check_policy_tasks.remove(&io_result.task_id)
                         else {
-                            panic!("unexpected announce policy completion");
+                            return Err(DocumentError::UnexpectedPolicyCompletion(io_result.task_id));
                         };
                         let policy = if should_announce {
                             AnnouncePolicy::Announce
@@ -320,12 +321,13 @@ impl DocumentActor {
             }
             ActorInput::Tick => {}
         }
-        self.step(now, out);
+        self.step(now, out)?;
+        Ok(())
     }
 
-    fn step(&mut self, now: UnixTimestamp, out: &mut DocActorResult) {
+    fn step(&mut self, now: UnixTimestamp, out: &mut DocActorResult) -> Result<(), DocumentError> {
         if self.run_state == RunState::Stopped {
-            panic!("document actor is stopped");
+            return Err(DocumentError::ActorStopped);
         }
         if self.run_state == RunState::Stopping {
             if self.on_disk_state.is_flushed() {
@@ -333,7 +335,7 @@ impl DocumentActor {
                 out.send_message(DocToHubMsgPayload::Terminated);
                 out.stopped = true;
             }
-            return;
+            return Ok(());
         }
         self.enqueue_announce_policy_checks(out);
         self.generate_sync_messages(now, out);
@@ -346,6 +348,7 @@ impl DocumentActor {
                 .into_iter()
                 .map(|s| s.map(DocumentIoTask::Storage)),
         );
+        Ok(())
     }
 
     pub fn is_stopped(&self) -> bool {

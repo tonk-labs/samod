@@ -4,6 +4,7 @@ use crate::{
     ephemera::EphemeralSession,
     io::{IoResult, IoTask, IoTaskId, StorageResult, StorageTask},
 };
+use std::fmt;
 
 /// A state machine for loading a samod repository.
 ///
@@ -37,6 +38,35 @@ use crate::{
 ///     }
 /// }
 /// ```
+/// Errors that can occur during the loading process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoaderError {
+    /// IO completion received in an unexpected state.
+    UnexpectedIoCompletion,
+    /// Task ID mismatch between expected and received.
+    TaskIdMismatch { expected: IoTaskId, received: IoTaskId },
+    /// Unexpected storage result type for the current operation.
+    UnexpectedStorageResult,
+}
+
+impl fmt::Display for LoaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoaderError::UnexpectedIoCompletion => {
+                write!(f, "IO completion received in an unexpected state")
+            }
+            LoaderError::TaskIdMismatch { expected, received } => {
+                write!(f, "Task ID mismatch: expected {expected:?}, got {received:?}")
+            }
+            LoaderError::UnexpectedStorageResult => {
+                write!(f, "Unexpected storage result for the current operation")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoaderError {}
+
 pub struct SamodLoader {
     local_peer_id: PeerId,
     state: State,
@@ -101,7 +131,7 @@ impl SamodLoader {
                 self.state = State::LoadingStorageId(task.task_id);
                 LoaderState::NeedIo(vec![task])
             }
-            State::LoadingStorageId(_task_id) => LoaderState::NeedIo(Vec::new()),
+            State::LoadingStorageId(_task_id) => LoaderState::NeedIo(Vec::default()),
             State::StorageIdLoaded(result) => {
                 if let Some(result) = result {
                     match String::from_utf8(result.to_vec()) {
@@ -130,7 +160,7 @@ impl SamodLoader {
                 self.state = State::PuttingStorageId(task.task_id, storage_id);
                 LoaderState::NeedIo(vec![task])
             }
-            State::PuttingStorageId(_task_id, _storage_id) => LoaderState::NeedIo(Vec::new()),
+            State::PuttingStorageId(_task_id, _storage_id) => LoaderState::NeedIo(Vec::default()),
             State::Done(storage_id) => {
                 let state = HubState::new(
                     storage_id.clone(),
@@ -150,35 +180,44 @@ impl SamodLoader {
     /// # Arguments
     ///
     /// * `result` - The result of executing an IO task
-    pub fn provide_io_result(&mut self, result: IoResult<StorageResult>) {
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the result was processed successfully, or a `LoaderError` if
+    /// the result was unexpected for the current state.
+    pub fn provide_io_result(&mut self, result: IoResult<StorageResult>) -> Result<(), LoaderError> {
         match self.state {
             State::Starting | State::Done(_) | State::StorageIdLoaded(_) => {
-                panic!("unexpected IO completion");
+                Err(LoaderError::UnexpectedIoCompletion)
             }
             State::LoadingStorageId(io_task_id) => {
                 if io_task_id != result.task_id {
-                    panic!(
-                        "unexpected task ID: expected {:?}, got {:?}",
-                        io_task_id, result.task_id
-                    );
+                    return Err(LoaderError::TaskIdMismatch {
+                        expected: io_task_id,
+                        received: result.task_id,
+                    });
                 }
                 match result.payload {
                     StorageResult::Load { value } => {
                         self.state = State::StorageIdLoaded(value);
+                        Ok(())
                     }
-                    _ => panic!("unexpected storage result when loading storage ID"),
+                    _ => Err(LoaderError::UnexpectedStorageResult),
                 }
             }
             State::PuttingStorageId(io_task_id, ref storage_id) => {
                 if io_task_id != result.task_id {
-                    panic!(
-                        "unexpected task ID: expected {:?}, got {:?}",
-                        io_task_id, result.task_id
-                    );
+                    return Err(LoaderError::TaskIdMismatch {
+                        expected: io_task_id,
+                        received: result.task_id,
+                    });
                 }
                 match result.payload {
-                    StorageResult::Put => self.state = State::Done(storage_id.clone()),
-                    _ => panic!("unexpected storage result when putting storage ID"),
+                    StorageResult::Put => {
+                        self.state = State::Done(storage_id.clone());
+                        Ok(())
+                    }
+                    _ => Err(LoaderError::UnexpectedStorageResult),
                 }
             }
         }
