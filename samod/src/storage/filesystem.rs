@@ -1,4 +1,3 @@
-#[cfg(any(feature = "tokio", feature = "gio"))]
 pub fn key_to_path(key: &samod_core::StorageKey) -> std::path::PathBuf {
     let mut result = std::path::PathBuf::new();
     for (index, component) in key.into_iter().enumerate() {

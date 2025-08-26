@@ -23,7 +23,32 @@ struct IoLoopResult {
 }
 
 #[tracing::instrument(skip(inner, storage, announce_policy, rx))]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn io_loop<S: Storage + Send, A: AnnouncePolicy>(
+    local_peer_id: PeerId,
+    inner: Arc<Mutex<Inner>>,
+    storage: S,
+    announce_policy: A,
+    rx: mpsc::UnboundedReceiver<IoLoopTask>,
+) where
+    A: Send,
+{
+    io_loop_impl(local_peer_id, inner, storage, announce_policy, rx).await
+}
+
+#[tracing::instrument(skip(inner, storage, announce_policy, rx))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn io_loop<S: Storage, A: AnnouncePolicy>(
+    local_peer_id: PeerId,
+    inner: Arc<Mutex<Inner>>,
+    storage: S,
+    announce_policy: A,
+    rx: mpsc::UnboundedReceiver<IoLoopTask>,
+) {
+    io_loop_impl(local_peer_id, inner, storage, announce_policy, rx).await
+}
+
+async fn io_loop_impl<S: Storage, A: AnnouncePolicy>(
     local_peer_id: PeerId,
     inner: Arc<Mutex<Inner>>,
     storage: S,

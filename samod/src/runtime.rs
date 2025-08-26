@@ -19,6 +19,7 @@ pub mod wasm;
 /// [`Storage`](crate::Storage) or pass messages between different document
 /// threads and the central control loop of the repo. [`RuntimeHandle`]
 /// represents this ability to spawn tasks.
+#[cfg(not(target_arch = "wasm32"))]
 pub trait RuntimeHandle: Clone + 'static {
     type JoinErr: JoinError + std::error::Error;
     type JoinFuture<O: Send + 'static>: Future<Output = Result<O, Self::JoinErr>> + Unpin;
@@ -28,6 +29,19 @@ pub trait RuntimeHandle: Clone + 'static {
     where
         O: Send + 'static,
         F: Future<Output = O> + Send + 'static;
+}
+
+/// WASM version of RuntimeHandle trait without Send bounds (WASM is single-threaded)
+#[cfg(target_arch = "wasm32")]
+pub trait RuntimeHandle: Clone + 'static {
+    type JoinErr: JoinError + std::error::Error;
+    type JoinFuture<O: 'static>: Future<Output = Result<O, Self::JoinErr>> + Unpin;
+
+    /// Spawn a task to be run in the background
+    fn spawn<O, F>(&self, f: F) -> Self::JoinFuture<O>
+    where
+        O: 'static,
+        F: Future<Output = O> + 'static;
 }
 
 pub trait JoinError {

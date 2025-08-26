@@ -56,6 +56,21 @@ web-sys = { version = "0.3", features = [
     "FileSystemDirectoryHandle",
     "FileSystemFileHandle",
     "FileSystemWritableFileStream",
+    "WritableStreamDefaultWriter",
+    "Navigator",
+    "StorageManager",
+    "IdbDatabase",
+    "IdbFactory", 
+    "IdbObjectStore",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "IdbKeyRange",
+    "IdbOpenDbRequest",
+    "IdbVersionChangeEvent",
+    "DomStringList",
+    "Event",
+    "EventTarget",
 ], optional = true }
 
 [dev-dependencies]
@@ -77,12 +92,30 @@ tokio-stream = { version = "0.1.17", features = ["io-util"] }
 tokio-util = { version = "0.7.15", features = ["codec", "net"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
+# WASM testing dependencies
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+console_error_panic_hook = "0.1"
+tracing-wasm = "0.2"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [[test]]
 name = "js_interop"
 required-features = ["tokio", "tungstenite", "axum"]
+
+[[test]]
+name = "wasm_storage_tests"
+required-features = []
+
+[[test]]
+name = "node_storage_test"
+required-features = ["wasm-node"]
+
+[[test]]
+name = "wasi_storage_test"
+required-features = ["wasi"]
 
 [package.metadata.wasm-pack]
 # Optional: specify additional wasm-opt arguments

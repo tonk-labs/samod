@@ -393,7 +393,88 @@ impl Repo {
         builder::RepoBuilder::new(crate::runtime::wasm::WasmRuntime::new())
     }
 
+    /// Create a new [`RepoBuilder`] for browsers with OPFS storage
+    ///
+    /// This uses the Origin Private File System API for persistent storage in modern browsers.
+    /// Falls back to in-memory storage if OPFS is not available.
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+    pub async fn build_wasm_opfs()
+    -> Result<RepoBuilder<crate::storage::OpfsStorage, crate::runtime::wasm::WasmRuntime, AlwaysAnnounce>, RepoBuilder<InMemoryStorage, crate::runtime::wasm::WasmRuntime, AlwaysAnnounce>> {
+        let runtime = crate::runtime::wasm::WasmRuntime::new();
+
+        // Try to use OPFS if available
+        if crate::storage::OpfsStorage::is_available() {
+            match crate::storage::OpfsStorage::new().await {
+                Ok(storage) => Ok(builder::RepoBuilder::new(runtime).with_storage(storage)),
+                Err(_) => Err(builder::RepoBuilder::new(runtime).with_storage(InMemoryStorage::new())),
+            }
+        } else {
+            Err(builder::RepoBuilder::new(runtime).with_storage(InMemoryStorage::new()))
+        }
+    }
+
+    /// Create a new [`RepoBuilder`] for browsers with IndexedDB storage
+    ///
+    /// This uses IndexedDB for persistent storage in browsers.
+    /// Falls back to in-memory storage if IndexedDB is not available.
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-browser"))]
+    pub async fn build_wasm_indexeddb()
+    -> Result<RepoBuilder<crate::storage::IndexedDbStorage, crate::runtime::wasm::WasmRuntime, AlwaysAnnounce>, RepoBuilder<InMemoryStorage, crate::runtime::wasm::WasmRuntime, AlwaysAnnounce>> {
+        let runtime = crate::runtime::wasm::WasmRuntime::new();
+
+        // Try to use IndexedDB if available
+        if crate::storage::IndexedDbStorage::is_available() {
+            match crate::storage::IndexedDbStorage::new().await {
+                Ok(storage) => Ok(builder::RepoBuilder::new(runtime).with_storage(storage)),
+                Err(_) => Err(builder::RepoBuilder::new(runtime).with_storage(InMemoryStorage::new())),
+            }
+        } else {
+            Err(builder::RepoBuilder::new(runtime).with_storage(InMemoryStorage::new()))
+        }
+    }
+
+    /// Create a new [`RepoBuilder`] for Node.js with filesystem storage
+    ///
+    /// This uses Node.js filesystem APIs for persistent storage.
+    /// The storage path defaults to "./samod_storage" in the current directory.
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-node"))]
+    pub fn build_wasm_node()
+    -> RepoBuilder<crate::storage::NodeFsStorage, crate::runtime::wasm::WasmRuntime, AlwaysAnnounce>
+    {
+        let runtime = crate::runtime::wasm::WasmRuntime::new();
+        let storage = crate::storage::NodeFsStorage::new("./samod_storage");
+        builder::RepoBuilder::new(runtime).with_storage(storage)
+    }
+
+    /// Create a new [`RepoBuilder`] for WASI with filesystem storage
+    ///
+    /// This uses WASI filesystem APIs for persistent storage.
+    /// The storage path defaults to "./samod_storage" in the current directory.
+    #[cfg(all(target_arch = "wasm32", feature = "wasi"))]
+    pub fn build_wasi() -> Result<
+        RepoBuilder<crate::storage::WasiStorage, crate::runtime::wasm::WasmRuntime, AlwaysAnnounce>,
+        std::io::Error,
+    > {
+        let runtime = crate::runtime::wasm::WasmRuntime::new();
+        let storage = crate::storage::WasiStorage::new("./samod_storage")?;
+        Ok(builder::RepoBuilder::new(runtime).with_storage(storage))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn load<R: runtime::RuntimeHandle, S: Storage + Send, A: AnnouncePolicy + Send>(
+        builder: RepoBuilder<S, R, A>,
+    ) -> Self {
+        Self::load_impl(builder).await
+    }
+    
+    #[cfg(target_arch = "wasm32")]
     pub(crate) async fn load<R: runtime::RuntimeHandle, S: Storage, A: AnnouncePolicy>(
+        builder: RepoBuilder<S, R, A>,
+    ) -> Self {
+        Self::load_impl(builder).await
+    }
+    
+    async fn load_impl<R: runtime::RuntimeHandle, S: Storage, A: AnnouncePolicy>(
         builder: RepoBuilder<S, R, A>,
     ) -> Self {
         let RepoBuilder {
