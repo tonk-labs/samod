@@ -59,7 +59,7 @@ impl SamodWrapper {
                 samod_core::LoaderState::NeedIo(tasks) => {
                     for task in tasks {
                         let result = storage.handle_task(task.action);
-                        loader.provide_io_result(IoResult {
+                        let _ = loader.provide_io_result(IoResult {
                             task_id: task.task_id,
                             payload: result,
                         });
